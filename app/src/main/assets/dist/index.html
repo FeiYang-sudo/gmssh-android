@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/x-icon" href="./logo/tray/windowsTrayTemplate.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>极目Linux桌面</title>
+    <style>
+      html,
+      body,
+      #app {
+        width: 100%;
+        min-width: 100%;
+        min-height: 100vh;
+        margin: 0;
+        background: #222222;
+      }
+
+      body {
+        overflow: hidden;
+        font-family: "Microsoft YaHei", "Arial", "Helvetica", sans-serif;
+      }
+
+      .app-boot-shell {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background: #222222;
+      }
+
+      .app-boot-header {
+        height: 48px;
+        flex: 0 0 48px;
+        display: flex;
+        align-items: center;
+        padding: 7px 20px;
+        background: #222222;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.5);
+        box-sizing: border-box;
+      }
+
+      .app-boot-tabs {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        min-width: 0;
+        overflow: hidden;
+        gap: 10px;
+      }
+
+      .app-boot-tabs-home {
+        flex: 0 0 auto;
+      }
+
+      .app-boot-tabs-dynamic {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        gap: 21px;
+      }
+
+      .app-boot-tab {
+        width: 166px;
+        height: 34px;
+        flex: 0 0 auto;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .app-boot-tab--home {
+        width: 74px;
+        background: rgba(255, 255, 255, 0.15);
+      }
+
+      .app-boot-tab--short {
+        width: 132px;
+      }
+
+      .app-boot-body {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+
+      .app-boot-sidebar {
+        width: 200px;
+        flex: 0 0 200px;
+        padding: 10px 16px;
+        background: transparent;
+        box-sizing: border-box;
+      }
+
+      /* 侧边栏收起时骨架屏同步收窄，与真实侧边栏的 64px 宽度、8px 内边距保持一致 */
+      .navbar-collapsed .app-boot-sidebar {
+        width: 64px;
+        flex: 0 0 64px;
+        padding: 10px 8px;
+      }
+
+      .app-boot-nav-item {
+        height: 44px;
+        margin-top: 8px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .app-boot-nav-item:first-child {
+        margin-top: 0;
+        background: rgba(255, 255, 255, 0.15);
+      }
+
+      .app-boot-content {
+        flex: 1;
+        min-width: 0;
+        margin: 10px 10px 10px 0;
+        border-radius: 8px;
+        background: #202020;
+      }
+    </style>
+    <link rel="stylesheet" href="./resource/slide_verification/slide-main.css" />
+    <!-- <link
+      rel="stylesheet"
+      href="https://at.alicdn.com/t/c/font_5019103_1zc8hsgse6pi.css?spm=a313x.manage_type_myprojects.i1.10.21623a81sQLuXQ&file=font_5019103_1zc8hsgse6pi.css"
+    /> -->
+    <script>
+      // 侧边栏展开/收起状态持久化在 localStorage，key 与 src/components/multi-computer-navbar.vue 保持一致。
+      // 在首帧渲染前同步读取并标记到 html 上，避免收起状态先渲染展开骨架再收起。
+      try {
+        if (window.localStorage.getItem("gm-navbar-collapsed") === "1") {
+          document.documentElement.classList.add("navbar-collapsed");
+        }
+      } catch {
+        // localStorage 不可用时保持默认展开骨架
+      }
+    </script>
+    <script type="module" crossorigin src="./assets/index-DcvslqPy.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/vueQueryPlugin-CLv7c685.js">
+    <link rel="stylesheet" crossorigin href="./assets/vueQueryPlugin-CeXxZT9h.css">
+    <link rel="stylesheet" crossorigin href="./assets/index-l9YclRoW.css">
+  </head>
+  <body>
+    <div id="app">
+      <div class="app-boot-shell">
+        <div class="app-boot-header">
+          <div class="app-boot-tabs">
+            <div class="app-boot-tabs-home">
+              <div class="app-boot-tab app-boot-tab--home"></div>
+            </div>
+            <div class="app-boot-tabs-dynamic">
+              <div class="app-boot-tab"></div>
+              <div class="app-boot-tab app-boot-tab--short"></div>
+            </div>
+          </div>
+        </div>
+        <div class="app-boot-body">
+          <div class="app-boot-sidebar">
+            <div class="app-boot-nav-item"></div>
+            <div class="app-boot-nav-item"></div>
+            <div class="app-boot-nav-item"></div>
+            <div class="app-boot-nav-item"></div>
+            <div class="app-boot-nav-item"></div>
+          </div>
+          <div class="app-boot-content"></div>
+        </div>
+      </div>
+    </div>
+    <script defer src="./resource/slide_verification/vendors-ie10.min.js"></script>
+    <script defer src="./resource/slide_verification/slide-main.min.js"></script>
+  </body>
+</html>
