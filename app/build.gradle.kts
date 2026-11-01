@@ -9,7 +9,8 @@ android {
 
     defaultConfig {
         applicationId = "com.gmssh.android"
-        minSdk = 24
+        minSdk = 26   // MINA SSHD 用 NIO2（java.nio.file），Android 8.0+ 才有完整实现
+        multiDexEnabled = true
         targetSdk = 34
         versionCode = 20600
         versionName = "2.0.6"
@@ -54,4 +55,6 @@ android {
 dependencies {
     implementation("androidx.webkit:webkit:1.11.0")
     implementation("androidx.core:core-ktx:1.13.1")
+    // 本地服务（NanoHTTPD + Apache MINA SSHD + BouncyCastle + i2p EdDSA）
+    implementation(project(":localservice"))
 }

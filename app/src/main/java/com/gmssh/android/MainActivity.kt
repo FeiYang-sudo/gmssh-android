@@ -25,7 +25,11 @@ import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import com.gmssh.localservice.LocalService
+import com.gmssh.localservice.LocalServiceLauncher
+import com.gmssh.localservice.Log as SvcLog
 import org.json.JSONObject
+import java.io.File
 
 class MainActivity : Activity() {
 
@@ -45,6 +49,8 @@ class MainActivity : Activity() {
     private lateinit var assetLoader: WebViewAssetLoader
     private lateinit var shimJs: String
     private var pendingAuthUrl: String? = null
+    /** get-port 握手最长等待（毫秒），超时后返回 gmServerStatus=false 让前端稍后重试 */
+    private val serviceReadyTimeoutMs = 8000L
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -80,9 +86,35 @@ class MainActivity : Activity() {
 
         handleIntent(intent, initial = true)
 
+        startLocalService()
+
         if (savedInstanceState == null) {
             webView.loadUrl(START_URL)
         }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 本地服务（真 SSH）                                                   */
+    /* ------------------------------------------------------------------ */
+
+    /** 后台线程拉起 localservice，拿到真端口；前端 get-port 会等它就绪 */
+    private fun startLocalService() {
+        SvcLog.sink = { level, tag, msg -> Log.println(levelToPriority(level), TAG, "[$tag] $msg") }
+        val dataDir = File(filesDir, "gmssh")
+        Thread({
+            val port = LocalServiceLauncher.start(dataDir)
+            Log.i(TAG, "localservice port=$port running=${LocalService.running} err=${LocalService.lastError}")
+            if (port > 0) {
+                // 通知前端端口已就绪（前端会重新拉一次 get-port / 首次进入流程）
+                dispatchMainToRender("gm-server-ready", LocalService.portJson())
+            }
+        }, "gm-local-service").apply { isDaemon = true }.start()
+    }
+
+    private fun levelToPriority(level: String): Int = when (level) {
+        "E" -> Log.ERROR
+        "W" -> Log.WARN
+        else -> Log.INFO
     }
 
     private fun configureWebView() {
@@ -363,7 +395,21 @@ class MainActivity : Activity() {
                 "update-quick-copy", "update-quick-paste", "update-term-font-size",
                 "sync-app-language" -> "{\"status\":\"ok\"}"
 
-                "get-port" -> "{\"status\":\"ok\",\"gmPort\":0,\"gmServerStatus\":false}"
+                // ★ 必须是裸端口对象（JS 侧已 JSON.parse 一次），不能再包 {status,data}
+                "get-port" -> {
+                    if (!LocalService.running) LocalServiceLauncher.awaitReady(serviceReadyTimeoutMs)
+                    LocalServiceLauncher.portJson()
+                }
+
+                // 前端在服务未就绪时会发它来拉起服务：幂等启动
+                "startGMServer", "start-gm-server", "start-gm-server-and-get-port" -> {
+                    if (!LocalService.running) {
+                        Thread({ LocalServiceLauncher.start(File(filesDir, "gmssh")) },
+                            "gm-local-service-retry").apply { isDaemon = true }.start()
+                        LocalServiceLauncher.awaitReady(serviceReadyTimeoutMs)
+                    }
+                    LocalServiceLauncher.portJson()
+                }
 
                 "get-resource-versions" -> "{\"status\":\"ok\",\"data\":{}}"
 
