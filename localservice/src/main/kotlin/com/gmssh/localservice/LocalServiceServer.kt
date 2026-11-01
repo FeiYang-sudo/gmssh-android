@@ -209,6 +209,9 @@ class LocalServiceServer(
 
             /* ---------- 健康检查（自加，非前端契约） ---------- */
             "/__health" -> ok(mapOf("status" to "up", "nodes" to store.allNodes().size))
+            // 前端启动即请求语言包；没有会报 501 + 未知错误
+            path.startsWith("/web/lang/") -> ok(mapOf<String, Any>())
+
 
             else -> unimplemented(path, method)
         }

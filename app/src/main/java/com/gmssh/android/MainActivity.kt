@@ -36,7 +36,7 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "GMSSH"
         private const val HOST = "appassets.androidplatform.net"
-        private const val START_URL = "https://$HOST/assets/dist/index.html"
+        private const val START_URL = "http://$HOST/assets/dist/index.html"
         private const val SCHEME = "gmssh"
         private const val AUTH_REQUEST = 1001
         const val UA_SUFFIX = " GMSSH-Android/2.0.6"

@@ -280,23 +280,30 @@
 })();
 
 
-/* ===== 诊断：把失败的请求画到屏幕上（手机上看不到 logcat） ===== */
+
+
+/* ===== 诊断：记录所有请求 + 响应摘要（手机上看不到 logcat） ===== */
 (function () {
   if (window.__gmXhrHooked) return;
   window.__gmXhrHooked = true;
   var report = function (s) {
-    try { if (window.AndroidBridge && window.AndroidBridge.diag) window.AndroidBridge.diag(String(s)); } catch (e) {}
+    try { if (window.AndroidBridge && window.AndroidBridge.diag) window.AndroidBridge.diag(String(s).slice(0, 150)); } catch (e) {}
   };
   var O = XMLHttpRequest.prototype.open, S = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open = function (m, u) { this.__m = m; this.__u = u; return O.apply(this, arguments); };
+  XMLHttpRequest.prototype.open = function (m, u) {
+    this.__m = m; this.__u = String(u).replace('http://127.0.0.1:', 'L:');
+    return O.apply(this, arguments);
+  };
   XMLHttpRequest.prototype.send = function () {
     var x = this;
-    x.addEventListener('error', function () { report('NETERR ' + x.__m + ' ' + x.__u); });
     x.addEventListener('loadend', function () {
-      if (!x.status) report('STATUS0 ' + x.__m + ' ' + x.__u);
-      else if (x.status >= 400) report('HTTP' + x.status + ' ' + x.__m + ' ' + x.__u);
+      var body = '';
+      try {
+        if (!x.responseType || x.responseType === 'text') body = String(x.responseText || '').slice(0, 100);
+      } catch (e) { body = '(no body)'; }
+      report(x.status + ' ' + x.__m + ' ' + x.__u + ' << ' + body);
     });
     return S.apply(this, arguments);
   };
-  report('shim loaded');
+  report('hooked');
 })();
