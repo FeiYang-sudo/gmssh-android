@@ -46,6 +46,10 @@ class MainActivity : Activity() {
     }
 
     private lateinit var webView: WebView
+    /** 诊断浮层：手机上看不到 logcat，就把关键状态直接画在屏幕上 */
+    private var diagView: android.widget.TextView? = null
+    private val diagLines = ArrayDeque<String>()
+    private val diagHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private lateinit var assetLoader: WebViewAssetLoader
     private lateinit var shimJs: String
     private var pendingAuthUrl: String? = null
@@ -80,9 +84,26 @@ class MainActivity : Activity() {
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
         )
+        // 诊断浮层（半透明，覆盖在底部）
+        diagView = android.widget.TextView(this).apply {
+            setTextColor(Color.parseColor("#7CFC00"))
+            textSize = 9f
+            setBackgroundColor(Color.parseColor("#CC000000"))
+            setPadding(12, 8, 12, 8)
+            text = "diag: 启动中…"
+        }
+        root.addView(
+            diagView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.BOTTOM
+            )
+        )
         setContentView(root)
 
         configureWebView()
+        startDiagLoop()
 
         handleIntent(intent, initial = true)
 
@@ -91,6 +112,37 @@ class MainActivity : Activity() {
         if (savedInstanceState == null) {
             webView.loadUrl(START_URL)
         }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 诊断浮层                                                            */
+    /* ------------------------------------------------------------------ */
+
+    private fun diag(msg: String) {
+        diagHandler.post {
+            val t = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+            diagLines.addLast("$t $msg")
+            while (diagLines.size > 5) diagLines.removeFirst()
+            refreshDiag()
+        }
+    }
+
+    private fun refreshDiag() {
+        val port = if (LocalService.running) {
+            runCatching { org.json.JSONObject(LocalService.portJson()).optInt("gmPort", -1) }.getOrDefault(-1)
+        } else -1
+        val head = "svc=" + (if (LocalService.running) "ON:$port" else "OFF") +
+            " err=" + (LocalService.lastError ?: "-")
+        diagView?.text = (listOf(head) + diagLines).joinToString("\n")
+    }
+
+    private fun startDiagLoop() {
+        diagHandler.postDelayed(object : Runnable {
+            override fun run() {
+                refreshDiag()
+                diagHandler.postDelayed(this, 2000)
+            }
+        }, 2000)
     }
 
     /* ------------------------------------------------------------------ */
@@ -358,8 +410,12 @@ class MainActivity : Activity() {
     /* JS 桥                                                               */
     /* ------------------------------------------------------------------ */
     inner class AndroidBridge {
-
+        /** JS 侧上报诊断信息（XHR 失败等），显示在浮层上 */
         @android.webkit.JavascriptInterface
+        fun diag(msg: String) {
+            this@MainActivity.diag(msg.take(120))
+        }
+
         fun invoke(requestId: String?, payloadJson: String?): String {
             val payload = runCatching { JSONObject(payloadJson ?: "{}") }.getOrNull()
                 ?: return "{\"status\":\"ok\"}"
