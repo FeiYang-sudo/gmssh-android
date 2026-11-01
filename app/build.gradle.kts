@@ -42,7 +42,15 @@ android {
 
     packaging {
         resources {
-            excludes += setOf("META-INF/*.kotlin_module", "META-INF/AL2.0", "META-INF/LGPL2.1")
+            excludes += setOf(
+                "META-INF/*.kotlin_module", "META-INF/AL2.0", "META-INF/LGPL2.1",
+                // BouncyCastle bcpkix/bcutil/bcprov 三个 jar 各带一份，重名会冲突
+                "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+                "META-INF/DEPENDENCIES", "META-INF/INDEX.LIST",
+                "META-INF/LICENSE", "META-INF/LICENSE.txt",
+                "META-INF/NOTICE", "META-INF/NOTICE.txt",
+                "META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA"
+            )
         }
     }
 
