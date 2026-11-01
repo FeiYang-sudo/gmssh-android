@@ -63,6 +63,15 @@ object LocalServiceLauncher {
         host: String = LocalServiceServer.DEFAULT_HOST,
         port: Int = 0,
     ): Int {
+        // ★ Android 上 System.getProperty("user.home") 是 null，
+        //   MINA SSHD 内部会去取用户主目录并抛 IllegalStateException("No user home")。
+        //   必须在任何 MINA 调用之前兜一个真实可写目录。
+        runCatching {
+            if (System.getProperty("user.home").isNullOrBlank()) {
+                System.setProperty("user.home", dataDir.absolutePath)
+            }
+        }
+
         ensureCrypto()
         if (LocalService.running) return LocalService.gmPort
 
