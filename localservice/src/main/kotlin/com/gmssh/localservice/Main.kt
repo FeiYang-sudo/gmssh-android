@@ -31,6 +31,7 @@ fun main(args: Array<String>) {
     var bPort = 0
     var host = LocalServiceServer.DEFAULT_HOST
     var data = File(System.getProperty("user.home"), ".gmssh")
+    var www: File? = null
 
     var i = 0
     while (i < args.size) {
@@ -39,9 +40,10 @@ fun main(args: Array<String>) {
             "--browser-port" -> bPort = args.getOrNull(++i)?.toIntOrNull() ?: bPort
             "--host" -> host = args.getOrNull(++i) ?: host
             "--data", "--data-dir" -> data = File(args.getOrNull(++i) ?: data.path)
+            "--www", "--www-dir" -> www = args.getOrNull(++i)?.let { File(it) }
             "--quiet" -> Log.verbose = false
             "-h", "--help" -> {
-                println("usage: [--port N] [--browser-port N] [--host 127.0.0.1] [--data DIR] [--quiet]")
+                println("usage: [--port N] [--browser-port N] [--host 127.0.0.1] [--data DIR] [--www DIR] [--quiet]")
                 return
             }
             else -> Log.w("GmMain", "unknown arg: ${args[i]}")
@@ -49,8 +51,15 @@ fun main(args: Array<String>) {
         i++
     }
 
-    println("GMSSH local service starting… data=${data.absolutePath} port=${if (port == 0) "auto" else port}")
-    val ok = LocalService.start(data, port, bPort, host)
+    if (www != null && !File(www!!.path, "index.html").isFile) {
+        println("[boot] WARN --www ${www!!.absolutePath} 下没有 index.html，静态托管可能 404")
+    }
+
+    println(
+        "GMSSH local service starting… data=${data.absolutePath} " +
+            "port=${if (port == 0) "auto" else port} www=${www?.absolutePath ?: "(disabled)"}"
+    )
+    val ok = LocalService.start(data, port, bPort, host, www)
     if (!ok) {
         println("GMSSH_LOCAL_FAILED ${LocalService.lastError}")
         kotlin.system.exitProcess(1)

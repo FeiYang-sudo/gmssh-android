@@ -14,17 +14,60 @@ import java.io.File
  * - 监听 127.0.0.1:<port>，只对本机可见
  * - 统一响应信封 `{code, msg, data}`（契约见 API_SPEC.md）
  * - 全量 CORS + OPTIONS 预检（页面来自 appassets/其他端口，属跨域）
+ * - `wwwDir != null` 时（只有 browserPort 那个实例会传）额外托管前端静态文件，
+ *   让页面与其 API 同源（http://127.0.0.1:browserPort），彻底避免混合内容/跨域。
  */
 class LocalServiceServer(
     host: String,
     port: Int,
     private val store: Store,
+    private val wwwDir: File? = null,
 ) : NanoHTTPD(host, port) {
 
     companion object {
         private const val TAG = "GmServer"
         private const val MAX_BODY = 4 * 1024 * 1024
         const val DEFAULT_HOST = "127.0.0.1"
+
+        /** 业务 API 路径前缀：命中这些前缀的请求永远走 API 路由，不参与静态兜底 */
+        private val API_PREFIXES = listOf(
+            "/data/", "/node/", "/group/", "/settings/", "/server/", "/web/", "/__health"
+        )
+
+        private val MIME = mapOf(
+            "html" to "text/html; charset=utf-8",
+            "htm" to "text/html; charset=utf-8",
+            "js" to "application/javascript; charset=utf-8",
+            "mjs" to "application/javascript; charset=utf-8",
+            "cjs" to "application/javascript; charset=utf-8",
+            "css" to "text/css; charset=utf-8",
+            "json" to "application/json; charset=utf-8",
+            "map" to "application/json; charset=utf-8",
+            "svg" to "image/svg+xml",
+            "png" to "image/png",
+            "jpg" to "image/jpeg",
+            "jpeg" to "image/jpeg",
+            "gif" to "image/gif",
+            "webp" to "image/webp",
+            "ico" to "image/x-icon",
+            "woff" to "font/woff",
+            "woff2" to "font/woff2",
+            "ttf" to "font/ttf",
+            "otf" to "font/otf",
+            "eot" to "application/vnd.ms-fontobject",
+            "wasm" to "application/wasm",
+            "txt" to "text/plain; charset=utf-8",
+            "xml" to "text/xml; charset=utf-8",
+            "mp3" to "audio/mpeg",
+            "wav" to "audio/wav",
+            "mp4" to "video/mp4",
+            "pdf" to "application/pdf",
+        )
+
+        private fun mimeOf(name: String): String {
+            val ext = name.substringAfterLast('.', "").lowercase()
+            return MIME[ext] ?: "application/octet-stream"
+        }
     }
 
     private val gson: Gson = GsonBuilder().disableHtmlEscaping().create()
@@ -95,6 +138,30 @@ class LocalServiceServer(
             return r
         }
 
+        // 静态托管（只有传了 wwwDir 的实例，即 browserPort）：GET/HEAD 且命中文件
+        if (wwwDir != null && (method == "GET" || method == "HEAD")) {
+            val st = try {
+                serveStatic(session, path, method == "HEAD")
+            } catch (t: Throwable) {
+                Log.e(TAG, "static crash on $path: ${t.javaClass.simpleName}: ${t.message}")
+                null
+            }
+            if (st != null) {
+                applyCors(st, origin)
+                return st
+            }
+            // 非 API 路径又找不到文件 → 明确 404，别落到 501 unimplemented
+            if (!isApiPath(path)) {
+                val nf = newFixedLengthResponse(
+                    Response.Status.NOT_FOUND,
+                    "text/plain; charset=utf-8",
+                    "404 not found: $path"
+                )
+                applyCors(nf, origin)
+                return nf
+            }
+        }
+
         val resp = try {
             route(method, path, session)
         } catch (t: Throwable) {
@@ -103,6 +170,70 @@ class LocalServiceServer(
         }
         applyCors(resp, origin)
         return resp
+    }
+
+    private fun isApiPath(path: String): Boolean = API_PREFIXES.any { path.startsWith(it) }
+
+    /* ------------------------------------------------------------------ */
+    /* 静态文件托管（browserPort）                                          */
+    /* ------------------------------------------------------------------ */
+
+    /** 命中并返回响应；文件不存在返回 null */
+    private fun serveStatic(session: IHTTPSession, rawPath: String, headOnly: Boolean): Response? {
+        val root = wwwDir ?: return null
+        val rootCanon = runCatching { root.canonicalFile }.getOrDefault(root)
+
+        // NanoHTTPD 的 uri 有的版本已解码、有的没有：两种都试一下
+        val candidates = LinkedHashSet<String>()
+        candidates.add(rawPath)
+        if (rawPath.contains('%')) {
+            runCatching { java.net.URLDecoder.decode(rawPath, "UTF-8") }.getOrNull()?.let { candidates.add(it) }
+        }
+
+        for (p in candidates) {
+            val rel = p.trimStart('/').ifEmpty { "index.html" }
+            val f = try {
+                File(rootCanon, rel).canonicalFile
+            } catch (e: Throwable) {
+                continue
+            }
+            // 目录穿越防护：必须仍在 root 之下
+            if (f.path != rootCanon.path && !f.path.startsWith(rootCanon.path + File.separator)) {
+                Log.w(TAG, "static traversal blocked: $p")
+                continue
+            }
+            val target = when {
+                f.isDirectory -> File(f, "index.html")
+                f.isFile -> f
+                else -> null
+            } ?: continue
+
+            if (!target.isFile) continue
+
+            val mime = mimeOf(target.name)
+            val isHtml = target.name.endsWith(".html", ignoreCase = true)
+            if (headOnly) {
+                val r = newFixedLengthResponse(Response.Status.OK, mime, "")
+                r.addHeader("Content-Length", target.length().toString())
+                applyStaticCache(r, isHtml, p)
+                return r
+            }
+            val ins = runCatching { java.io.FileInputStream(target) }.getOrNull() ?: continue
+            val r = newChunkedResponse(Response.Status.OK, mime, java.io.BufferedInputStream(ins, 64 * 1024))
+            applyStaticCache(r, isHtml, p)
+            return r
+        }
+        return null
+    }
+
+    private fun applyStaticCache(r: Response, isHtml: Boolean, path: String) {
+        when {
+            // HTML 必须实时（升级后重新提取），否则 WebView 会拿旧壳
+            isHtml -> r.addHeader("Cache-Control", "no-store")
+            path.startsWith("/assets/") -> r.addHeader("Cache-Control", "public, max-age=31536000, immutable")
+            else -> r.addHeader("Cache-Control", "public, max-age=86400")
+        }
+        r.addHeader("Accept-Ranges", "none")
     }
 
     private fun route(method: String, path: String, session: IHTTPSession): Response {

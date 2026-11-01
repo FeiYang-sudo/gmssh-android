@@ -56,12 +56,18 @@ object LocalServiceLauncher {
     /**
      * 启动本地服务。幂等：已在运行直接返回现有端口；正在启动则等待启动结果。
      *
+     * @param dataDir 数据目录（Android: filesDir/gmssh）
+     * @param wwwDir  前端静态根目录（Android: filesDir/www）；非 null 时 browserPort 会托管
+     *                静态文件，WebView 直接打开 http://127.0.0.1:browserPort/index.html，
+     *                页面与 API 同源，无混合内容 / 无跨域
      * @return 实际监听端口（失败返回 0，原因见 [LocalService.lastError]）
      */
     fun start(
         dataDir: File,
+        wwwDir: File? = null,
         host: String = LocalServiceServer.DEFAULT_HOST,
         port: Int = 0,
+        browserPort: Int = 0,
     ): Int {
         // ★ Android 上 System.getProperty("user.home") 是 null，
         //   MINA SSHD 内部会去取用户主目录并抛 IllegalStateException("No user home")。
@@ -82,10 +88,14 @@ object LocalServiceLauncher {
 
         return try {
             dataDir.mkdirs()
-            Log.i(TAG, "starting local service, data=${dataDir.absolutePath}")
-            val ok = LocalService.start(dataDir, port, 0, host)
+            Log.i(
+                TAG,
+                "starting local service, data=${dataDir.absolutePath}" +
+                    (if (wwwDir != null) " www=${wwwDir.absolutePath}" else "")
+            )
+            val ok = LocalService.start(dataDir, port, browserPort, host, wwwDir)
             if (ok) {
-                Log.i(TAG, "local service ready on ${LocalService.gmPort}")
+                Log.i(TAG, "local service ready on ${LocalService.gmPort}, browser=${LocalService.browserPort}")
                 LocalService.gmPort
             } else {
                 Log.e(TAG, "local service failed: ${LocalService.lastError}")
@@ -100,9 +110,9 @@ object LocalServiceLauncher {
     }
 
     /** 后台线程启一次（Android 用；不阻塞调用线程） */
-    fun startAsync(dataDir: File, host: String = LocalServiceServer.DEFAULT_HOST) {
+    fun startAsync(dataDir: File, wwwDir: File? = null, host: String = LocalServiceServer.DEFAULT_HOST) {
         if (LocalService.running) return
-        Thread({ start(dataDir, host) }, "gm-local-service").apply {
+        Thread({ start(dataDir, wwwDir, host) }, "gm-local-service").apply {
             isDaemon = true
             start()
         }

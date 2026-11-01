@@ -12,8 +12,8 @@ android {
         minSdk = 26   // MINA SSHD 用 NIO2（java.nio.file），Android 8.0+ 才有完整实现
         multiDexEnabled = true
         targetSdk = 34
-        versionCode = 20600
-        versionName = "2.0.6"
+        versionCode = 20700
+        versionName = "2.0.7"
         // 只保留通用 ABI 无关的纯 Java/Kotlin 代码，无需 ndk 配置
     }
 

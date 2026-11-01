@@ -16,12 +16,10 @@ import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.Toast
-import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -35,14 +33,17 @@ class MainActivity : Activity() {
 
     companion object {
         private const val TAG = "GMSSH"
-        private const val HOST = "appassets.androidplatform.net"
-        private const val START_URL = "http://$HOST/assets/dist/index.html"
+        /** 前端静态文件由本地服务的 browserPort 自己托管 —— 页面与 API 同源 */
+        private const val LOOPBACK = "127.0.0.1"
         private const val SCHEME = "gmssh"
         private const val AUTH_REQUEST = 1001
-        const val UA_SUFFIX = " GMSSH-Android/2.0.6"
+        const val UA_SUFFIX = " GMSSH-Android/2.0.7"
 
         /** 供 AuthActivity 回传授权回调地址 */
         const val EXTRA_CALLBACK_URL = "callback_url"
+
+        /** 版本标记文件：升级后重新提取 assets/dist */
+        private const val WWW_VERSION_FILE = ".dist-version"
     }
 
     private lateinit var webView: WebView
@@ -50,8 +51,11 @@ class MainActivity : Activity() {
     private var diagView: android.widget.TextView? = null
     private val diagLines = ArrayDeque<String>()
     private val diagHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private lateinit var assetLoader: WebViewAssetLoader
+    /** 启动遮罩：服务就绪前显示「正在启动本地服务…」，失败时显示错误 */
+    private var splashView: android.widget.TextView? = null
     private lateinit var shimJs: String
+    /** 前端静态根目录（filesDir/www），由 assets/dist 提取而来 */
+    private lateinit var wwwDir: File
     private var pendingAuthUrl: String? = null
     /** get-port 握手最长等待（毫秒），超时后返回 gmServerStatus=false 让前端稍后重试 */
     private val serviceReadyTimeoutMs = 8000L
@@ -60,10 +64,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        assetLoader = WebViewAssetLoader.Builder()
-            .setDomain(HOST)
-            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
-            .build()
+        wwwDir = File(filesDir, "www")
 
         shimJs = runCatching {
             assets.open("gm_shim.js").bufferedReader().use { it.readText() }
@@ -79,6 +80,22 @@ class MainActivity : Activity() {
         webView = WebView(this)
         root.addView(
             webView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        // 启动遮罩（居中文本，服务就绪后隐藏）
+        splashView = android.widget.TextView(this).apply {
+            setTextColor(Color.parseColor("#CCCCCC"))
+            textSize = 14f
+            gravity = android.view.Gravity.CENTER
+            setPadding(40, 40, 40, 40)
+            setBackgroundColor(Color.parseColor("#222222"))
+            text = "正在启动本地服务…"
+        }
+        root.addView(
+            splashView,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
@@ -107,11 +124,9 @@ class MainActivity : Activity() {
 
         handleIntent(intent, initial = true)
 
+        // ★ 不再在 onCreate 里 loadUrl：必须等本地服务起来、拿到 browserPort，
+        //   再加载 http://127.0.0.1:<browserPort>/index.html（同源，无混合内容）
         startLocalService()
-
-        if (savedInstanceState == null) {
-            webView.loadUrl(START_URL)
-        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -131,7 +146,9 @@ class MainActivity : Activity() {
         val port = if (LocalService.running) {
             runCatching { org.json.JSONObject(LocalService.portJson()).optInt("gmPort", -1) }.getOrDefault(-1)
         } else -1
+        val bp = if (LocalService.running) LocalService.browserPort else -1
         val head = "svc=" + (if (LocalService.running) "ON:$port" else "OFF") +
+            " www=$bp" +
             " err=" + (LocalService.lastError ?: "-")
         diagView?.text = (listOf(head) + diagLines).joinToString("\n")
     }
@@ -149,18 +166,145 @@ class MainActivity : Activity() {
     /* 本地服务（真 SSH）                                                   */
     /* ------------------------------------------------------------------ */
 
-    /** 后台线程拉起 localservice，拿到真端口；前端 get-port 会等它就绪 */
+    /**
+     * 后台线程：先把 assets/dist 提取到 filesDir/www，再拉起 localservice（browserPort 托管
+     * 这个目录），拿到真端口后用 **同源** URL 加载页面。
+     */
     private fun startLocalService() {
         SvcLog.sink = { level, tag, msg -> Log.println(levelToPriority(level), TAG, "[$tag] $msg") }
         val dataDir = File(filesDir, "gmssh")
         Thread({
-            val port = LocalServiceLauncher.start(dataDir)
-            Log.i(TAG, "localservice port=$port running=${LocalService.running} err=${LocalService.lastError}")
-            if (port > 0) {
-                // 通知前端端口已就绪（前端会重新拉一次 get-port / 首次进入流程）
-                dispatchMainToRender("gm-server-ready", LocalService.portJson())
+            // 1) 首次启动（或升级后）把前端整棵树复制到 filesDir/www
+            val www = runCatching { extractWebAssets() }.getOrElse { e ->
+                Log.e(TAG, "extractWebAssets failed: ${e.javaClass.simpleName}: ${e.message}")
+                diag("www 提取失败: ${e.message}")
+                wwwDir
+            }
+
+            // 2) 起服务（browserPort 负责静态托管）
+            val port = LocalServiceLauncher.start(dataDir, www)
+            val bPort = LocalService.browserPort
+            Log.i(
+                TAG,
+                "localservice gmPort=$port browserPort=$bPort running=${LocalService.running} err=${LocalService.lastError}"
+            )
+
+            runOnUiThread {
+                if (port > 0 && bPort > 0) {
+                    hideSplash()
+                    val url = "http://$LOOPBACK:$bPort/index.html"
+                    diag("load $url")
+                    webView.loadUrl(url)
+                    // 兜底：稍后再推一次端口（页面自己也会 get-port）
+                    diagHandler.postDelayed({
+                        dispatchMainToRender("gm-server-ready", LocalService.portJson())
+                    }, 1500)
+                } else {
+                    showSplashError(
+                        "本地服务启动失败\n" +
+                            "err=" + (LocalService.lastError ?: "未知") + "\n" +
+                            "www=${www.absolutePath}"
+                    )
+                }
             }
         }, "gm-local-service").apply { isDaemon = true }.start()
+    }
+
+    /** 隐藏启动遮罩 */
+    private fun hideSplash() {
+        splashView?.visibility = View.GONE
+    }
+
+    /** 启动失败：把错误画在原来的遮罩位置上，方便远程看截图定位 */
+    private fun showSplashError(msg: String) {
+        splashView?.apply {
+            visibility = View.VISIBLE
+            setTextColor(Color.parseColor("#FF6B6B"))
+            text = msg
+        }
+        diag(msg)
+    }
+
+    /**
+     * 把 APK 里的 assets/dist 整棵树复制到 filesDir/www（首次启动 / 升级后）。
+     * 用 [WWW_VERSION_FILE] 记录版本，避免每次启动都复制 15MB。
+     */
+    private fun extractWebAssets(): File {
+        val root = wwwDir
+        val stamp = File(root, WWW_VERSION_FILE)
+        val version = appVersionKey()
+
+        if (File(root, "index.html").isFile && stamp.isFile &&
+            runCatching { stamp.readText().trim() }.getOrDefault("") == version
+        ) {
+            Log.i(TAG, "www 已就绪（$version），跳过提取: ${root.absolutePath}")
+            diag("www cached $version")
+            return root
+        }
+
+        Log.i(TAG, "提取 assets/dist -> ${root.absolutePath} (version=$version)")
+        diag("extract dist…")
+        val t0 = System.currentTimeMillis()
+
+        // 清掉旧内容，避免升级后残留旧 hash 资源 / 旧 index.html
+        if (root.exists()) root.deleteRecursively()
+        root.mkdirs()
+
+        var files = 0
+        var bytes = 0L
+        val buf = ByteArray(64 * 1024)
+
+        fun copyDir(assetPath: String, target: File) {
+            val children = assets.list(assetPath) ?: return
+            target.mkdirs()
+            for (name in children) {
+                val childAsset = "$assetPath/$name"
+                val childTarget = File(target, name)
+                // assets.list 对目录返回子项、对文件返回空数组：先试目录
+                val sub: Array<String>? = runCatching { assets.list(childAsset) }.getOrNull()
+                if (sub != null && sub.isNotEmpty()) {
+                    copyDir(childAsset, childTarget)
+                    continue
+                }
+                runCatching {
+                    assets.open(childAsset).use { ins ->
+                        childTarget.parentFile?.mkdirs()
+                        java.io.FileOutputStream(childTarget).use { out ->
+                            while (true) {
+                                val n = ins.read(buf)
+                                if (n <= 0) break
+                                out.write(buf, 0, n)
+                                bytes += n
+                            }
+                        }
+                    }
+                    files++
+                }.onFailure {
+                    Log.w(TAG, "copy $childAsset failed: ${it.message}")
+                }
+            }
+        }
+
+        copyDir("dist", root)
+        // 记录版本标记（写在最后，中途崩溃下次会重新提取）
+        runCatching { stamp.writeText(version) }
+
+        val cost = System.currentTimeMillis() - t0
+        Log.i(TAG, "www 提取完成: $files 个文件, ${bytes / 1024}KB, ${cost}ms")
+        diag("www ${files}f ${bytes / 1024}KB ${cost}ms")
+        if (!File(root, "index.html").isFile) {
+            Log.e(TAG, "提取后仍没有 index.html: ${root.absolutePath}")
+            diag("ERR 无 index.html")
+        }
+        return root
+    }
+
+    /** 版本标记：versionName + 安装时间（覆盖安装后必变） */
+    private fun appVersionKey(): String = try {
+        val pi = packageManager.getPackageInfo(packageName, 0)
+        "${pi.versionName}-${pi.lastUpdateTime}"
+    } catch (e: Throwable) {
+        "unknown"
     }
 
     private fun levelToPriority(level: String): Int = when (level) {
@@ -202,13 +346,6 @@ class MainActivity : Activity() {
         }
 
         webView.webViewClient = object : WebViewClientCompat() {
-            override fun shouldInterceptRequest(
-                view: WebView,
-                request: WebResourceRequest
-            ): WebResourceResponse? {
-                return assetLoader.shouldInterceptRequest(request.url)
-            }
-
             override fun shouldOverrideUrlLoading(
                 view: WebView,
                 request: WebResourceRequest
@@ -250,11 +387,6 @@ class MainActivity : Activity() {
                         v: WebView,
                         request: WebResourceRequest
                     ): Boolean = handleUrl(request.url)
-
-                    override fun shouldInterceptRequest(
-                        v: WebView,
-                        request: WebResourceRequest
-                    ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
                 }
                 popup.settings.javaScriptEnabled = true
                 popup.settings.domStorageEnabled = true
@@ -272,7 +404,10 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 站内（appassets）继续在 WebView 内；gmssh:// 拦截为授权回调；其余交系统浏览器 */
+    /**
+     * 站内（本机回环 http://127.0.0.1:browserPort）继续在 WebView 内；
+     * gmssh:// 拦截为授权回调；其余交系统浏览器。
+     */
     private fun handleUrl(uri: Uri): Boolean {
         val scheme = uri.scheme?.lowercase() ?: return false
         if (scheme == SCHEME) {
@@ -281,7 +416,8 @@ class MainActivity : Activity() {
             return true
         }
         if (scheme == "http" || scheme == "https") {
-            if (uri.host == HOST) return false
+            // ★ 本地服务自己托管页面，回环地址必须留在 WebView 内
+            if (isLoopback(uri)) return false
             openExternally(uri)
             return true
         }
@@ -290,6 +426,11 @@ class MainActivity : Activity() {
             startActivity(Intent(Intent.ACTION_VIEW, uri))
             true
         }.getOrDefault(false)
+    }
+
+    private fun isLoopback(uri: Uri): Boolean {
+        val h = uri.host ?: return false
+        return h == LOOPBACK || h == "localhost" || h == "::1" || h == "[::1]"
     }
 
     private fun openExternally(uri: Uri) {
@@ -460,8 +601,11 @@ class MainActivity : Activity() {
                 // 前端在服务未就绪时会发它来拉起服务：幂等启动
                 "startGMServer", "start-gm-server", "start-gm-server-and-get-port" -> {
                     if (!LocalService.running) {
-                        Thread({ LocalServiceLauncher.start(File(filesDir, "gmssh")) },
-                            "gm-local-service-retry").apply { isDaemon = true }.start()
+                        Thread({
+                            // 这次也带上 wwwDir，保证 browserPort 的静态托管不丢
+                            val www = runCatching { extractWebAssets() }.getOrDefault(wwwDir)
+                            LocalServiceLauncher.start(File(filesDir, "gmssh"), www)
+                        }, "gm-local-service-retry").apply { isDaemon = true }.start()
                         LocalServiceLauncher.awaitReady(serviceReadyTimeoutMs)
                     }
                     LocalServiceLauncher.portJson()
